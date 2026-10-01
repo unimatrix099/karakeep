@@ -31,6 +31,24 @@ const oauthIdTokenSignedResponseAlg = z.enum([
   "EdDSA",
 ]);
 
+function providerRateLimit(
+  prefix: "INFERENCE" | "EMBEDDING",
+  windowMs: number | undefined,
+  maxRequests: number | undefined,
+): { windowMs: number; maxRequests: number } | null {
+  if (windowMs !== undefined && maxRequests !== undefined) {
+    return { windowMs, maxRequests };
+  }
+  if (windowMs !== undefined || maxRequests !== undefined) {
+    // The logger depends on this module, so warn directly. Config is parsed
+    // once per process, so this prints once at startup.
+    console.warn(
+      `${prefix}_RATE_LIMIT_WINDOW_MS and ${prefix}_RATE_LIMIT_MAX_REQUESTS must both be set; ${prefix.toLowerCase()} rate limiting is disabled.`,
+    );
+  }
+  return null;
+}
+
 const allEnv = z.object({
   PORT: z.coerce.number().default(3000),
   WORKERS_HOST: z.string().default("127.0.0.1"),
@@ -103,6 +121,8 @@ const allEnv = z.object({
   EMBEDDING_CONTEXT_LENGTH: z.coerce.number().int().positive().default(8000),
   EMBEDDING_NUM_WORKERS: z.coerce.number().default(1),
   EMBEDDING_JOB_TIMEOUT_SEC: z.coerce.number().default(60),
+  EMBEDDING_RATE_LIMIT_WINDOW_MS: z.coerce.number().min(1).optional(),
+  EMBEDDING_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).optional(),
   INFERENCE_CONTEXT_LENGTH: z.coerce.number().default(2048),
   INFERENCE_MAX_OUTPUT_TOKENS: z.coerce.number().default(2048),
   INFERENCE_USE_MAX_COMPLETION_TOKENS: optionalStringBool(),
@@ -128,6 +148,8 @@ const allEnv = z.object({
   CRAWLER_NAVIGATE_TIMEOUT_SEC: z.coerce.number().default(30),
   CRAWLER_NUM_WORKERS: z.coerce.number().default(1),
   INFERENCE_NUM_WORKERS: z.coerce.number().default(1),
+  INFERENCE_RATE_LIMIT_WINDOW_MS: z.coerce.number().min(1).optional(),
+  INFERENCE_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).optional(),
   SEARCH_NUM_WORKERS: z.coerce.number().default(1),
   SEARCH_JOB_TIMEOUT_SEC: z.coerce.number().default(30),
   WEBHOOK_NUM_WORKERS: z.coerce.number().default(1),
@@ -337,6 +359,11 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       numWorkers: val.INFERENCE_NUM_WORKERS,
       jobTimeoutSec: val.INFERENCE_JOB_TIMEOUT_SEC,
       fetchTimeoutSec: val.INFERENCE_FETCH_TIMEOUT_SEC,
+      rateLimit: providerRateLimit(
+        "INFERENCE",
+        val.INFERENCE_RATE_LIMIT_WINDOW_MS,
+        val.INFERENCE_RATE_LIMIT_MAX_REQUESTS,
+      ),
       openAIApiKey: val.OPENAI_API_KEY,
       openAIBaseUrl: val.OPENAI_BASE_URL,
       openAIProxyUrl: val.OPENAI_PROXY_URL,
@@ -394,6 +421,11 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       contextLength: val.EMBEDDING_CONTEXT_LENGTH,
       numWorkers: val.EMBEDDING_NUM_WORKERS,
       jobTimeoutSec: val.EMBEDDING_JOB_TIMEOUT_SEC,
+      rateLimit: providerRateLimit(
+        "EMBEDDING",
+        val.EMBEDDING_RATE_LIMIT_WINDOW_MS,
+        val.EMBEDDING_RATE_LIMIT_MAX_REQUESTS,
+      ),
     },
     crawler: {
       numWorkers: val.CRAWLER_NUM_WORKERS,

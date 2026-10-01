@@ -34,6 +34,7 @@ import {
   EmbeddingClientFactory,
   InferenceClientFactory,
 } from "@karakeep/shared/inference";
+import { InferenceRateLimitedError } from "@karakeep/shared/inferenceRateLimit";
 import logger from "@karakeep/shared/logger";
 import { buildSummaryPrompt } from "@karakeep/shared/prompts.server";
 import { EnqueueOptions } from "@karakeep/shared/queueing";
@@ -1039,7 +1040,9 @@ export const bookmarksAppRouter = router({
         const hasQueryText = parsedQuery.text.trim().length > 0;
         let semanticInfraError: unknown;
         const semanticClients = await (async () => ({
-          embeddingClient: EmbeddingClientFactory.build(),
+          // Search queries are interactive, so they skip the embedding rate
+          // limit that's meant for background indexing.
+          embeddingClient: EmbeddingClientFactory.build({ rateLimited: false }),
           vectorStoreClient: await getVectorStoreClient(),
         }))().catch((error: unknown) => {
           if (input.searchMode === "semantic") {
@@ -1571,9 +1574,19 @@ Author: ${bookmark.author ?? ""}
         "inference.prompt.size": Buffer.byteLength(summaryPrompt, "utf8"),
       });
 
-      const summary = await inferenceClient.inferFromText(summaryPrompt, {
-        schema: null,
-      });
+      const summary = await inferenceClient
+        .inferFromText(summaryPrompt, {
+          schema: null,
+        })
+        .catch((error: unknown) => {
+          if (error instanceof InferenceRateLimitedError) {
+            throw new TRPCError({
+              code: "TOO_MANY_REQUESTS",
+              message: `AI provider rate limit reached, retry in ${error.resetInSeconds}s`,
+            });
+          }
+          throw error;
+        });
 
       if (!summary.response) {
         throw new TRPCError({

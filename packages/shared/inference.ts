@@ -6,6 +6,10 @@ import { z } from "zod";
 
 import serverConfig from "./config";
 import { customFetch } from "./customFetch";
+import {
+  RateLimitedEmbeddingClient,
+  RateLimitedInferenceClient,
+} from "./inferenceRateLimit";
 import logger from "./logger";
 
 export interface InferenceResponse {
@@ -207,6 +211,15 @@ const buildOpenAIClient = (config: OpenAIEmbeddingConfig) =>
 
 export class InferenceClientFactory {
   static build(): InferenceClient | null {
+    const client = InferenceClientFactory.buildUnlimited();
+    const rateLimit = serverConfig.inference.rateLimit;
+    if (client && rateLimit) {
+      return new RateLimitedInferenceClient(client, rateLimit);
+    }
+    return client;
+  }
+
+  private static buildUnlimited(): InferenceClient | null {
     if (serverConfig.inference.openAIApiKey) {
       return OpenAIInferenceClient.fromConfig();
     }
@@ -218,8 +231,27 @@ export class InferenceClientFactory {
   }
 }
 
+export interface EmbeddingClientBuildOptions {
+  /**
+   * Whether to apply the EMBEDDING_RATE_LIMIT_* limit. Interactive callers
+   * (e.g. search queries) opt out so background indexing can't starve them.
+   */
+  rateLimited?: boolean;
+}
+
 export class EmbeddingClientFactory {
-  static build(): EmbeddingClient | null {
+  static build({
+    rateLimited = true,
+  }: EmbeddingClientBuildOptions = {}): EmbeddingClient | null {
+    const client = EmbeddingClientFactory.buildUnlimited();
+    const rateLimit = serverConfig.embedding.rateLimit;
+    if (client && rateLimit && rateLimited) {
+      return new RateLimitedEmbeddingClient(client, rateLimit);
+    }
+    return client;
+  }
+
+  private static buildUnlimited(): EmbeddingClient | null {
     if (
       serverConfig.embedding.openAIApiKey ||
       serverConfig.embedding.openAIBaseUrl
