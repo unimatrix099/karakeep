@@ -41,6 +41,9 @@ swallows errors needs a rethrow.
 - `EmbeddingClientFactory.build()` wraps in `RateLimitedEmbeddingClient` when
   `serverConfig.embedding.rateLimit` is set (ensuring no double-wrapping on the fallback path).
 - Add an option `EmbeddingClientFactory.build({ rateLimited: false })` for search (step 6).
+- As implemented: the inference wrapper passes embedding calls through unlimited, and the
+  embedding factory wraps whatever it builds (including the inference-client fallback) with the
+  embedding limiter, so each embedding call is counted exactly once, against the embedding bucket.
 
 ### 4. Workers — swallowed-error fix only
 - `apps/workers/workers/assetPreprocessingWorker.ts:302-307`: the LLM OCR `catch` logs and
@@ -52,11 +55,10 @@ swallows errors needs a rethrow.
 - Catch `InferenceRateLimitedError` → `TRPCError({ code: "TOO_MANY_REQUESTS", message: "AI provider rate limit reached, retry in Ns" })`.
 - Check the REST API (`packages/api`) surface maps tRPC `TOO_MANY_REQUESTS` to HTTP 429 (verify existing error mapping).
 
-### 6. Semantic search query embeddings — `bookmarks.ts:~1085` (DECISION NEEDED)
-- Recommended: **bypass** the limit (`build({ rateLimited: false })`). A search is one
-  small, user-facing call; letting background indexing starve search is a worse failure.
-- Alternative: own bucket (`EMBEDDING_SEARCH_RATE_LIMIT_*`) and on limit: semantic mode → 429,
-  hybrid mode → fall back to keyword via the existing `semanticInfraError` path.
+### 6. Semantic search query embeddings — `bookmarks.ts:~1043`
+- **Decided: bypass the limit** (`EmbeddingClientFactory.build({ rateLimited: false })`).
+  The limits exist to pace background batch work (crawl → tag/summarize/embed); a search
+  is one small, user-facing call and must not be starved by indexing.
 
 ### 7. Tests (Vitest)
 - `packages/shared/inferenceRateLimit.test.ts`:

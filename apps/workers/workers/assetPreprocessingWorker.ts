@@ -34,6 +34,7 @@ import {
   DequeuedJob,
   EnqueueOptions,
   getQueueClient,
+  QueueRetryAfterError,
 } from "@karakeep/shared/queueing";
 
 export class AssetPreprocessingWorker {
@@ -302,6 +303,11 @@ async function extractAndSaveImageText(
     try {
       imageText = await readImageTextWithLLM(asset, contentType);
     } catch (e) {
+      if (e instanceof QueueRetryAfterError) {
+        // Rate limited: let the queue reschedule the job instead of
+        // silently continuing without OCR text.
+        throw e;
+      }
       logger.error(
         `[assetPreprocessing][${jobId}] Failed to read image text with LLM: ${e}`,
       );

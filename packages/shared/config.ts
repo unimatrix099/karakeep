@@ -103,6 +103,8 @@ const allEnv = z.object({
   EMBEDDING_CONTEXT_LENGTH: z.coerce.number().int().positive().default(8000),
   EMBEDDING_NUM_WORKERS: z.coerce.number().default(1),
   EMBEDDING_JOB_TIMEOUT_SEC: z.coerce.number().default(60),
+  EMBEDDING_RATE_LIMIT_WINDOW_MS: z.coerce.number().min(1).optional(),
+  EMBEDDING_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().min(1).optional(),
   INFERENCE_CONTEXT_LENGTH: z.coerce.number().default(2048),
   INFERENCE_MAX_OUTPUT_TOKENS: z.coerce.number().default(2048),
   INFERENCE_USE_MAX_COMPLETION_TOKENS: optionalStringBool(),
@@ -128,6 +130,8 @@ const allEnv = z.object({
   CRAWLER_NAVIGATE_TIMEOUT_SEC: z.coerce.number().default(30),
   CRAWLER_NUM_WORKERS: z.coerce.number().default(1),
   INFERENCE_NUM_WORKERS: z.coerce.number().default(1),
+  INFERENCE_RATE_LIMIT_WINDOW_MS: z.coerce.number().min(1).optional(),
+  INFERENCE_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().min(1).optional(),
   SEARCH_NUM_WORKERS: z.coerce.number().default(1),
   SEARCH_JOB_TIMEOUT_SEC: z.coerce.number().default(30),
   WEBHOOK_NUM_WORKERS: z.coerce.number().default(1),
@@ -337,6 +341,14 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       numWorkers: val.INFERENCE_NUM_WORKERS,
       jobTimeoutSec: val.INFERENCE_JOB_TIMEOUT_SEC,
       fetchTimeoutSec: val.INFERENCE_FETCH_TIMEOUT_SEC,
+      rateLimit:
+        val.INFERENCE_RATE_LIMIT_WINDOW_MS !== undefined &&
+        val.INFERENCE_RATE_LIMIT_MAX_REQUESTS !== undefined
+          ? {
+              windowMs: val.INFERENCE_RATE_LIMIT_WINDOW_MS,
+              maxRequests: val.INFERENCE_RATE_LIMIT_MAX_REQUESTS,
+            }
+          : null,
       openAIApiKey: val.OPENAI_API_KEY,
       openAIBaseUrl: val.OPENAI_BASE_URL,
       openAIProxyUrl: val.OPENAI_PROXY_URL,
@@ -394,6 +406,14 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       contextLength: val.EMBEDDING_CONTEXT_LENGTH,
       numWorkers: val.EMBEDDING_NUM_WORKERS,
       jobTimeoutSec: val.EMBEDDING_JOB_TIMEOUT_SEC,
+      rateLimit:
+        val.EMBEDDING_RATE_LIMIT_WINDOW_MS !== undefined &&
+        val.EMBEDDING_RATE_LIMIT_MAX_REQUESTS !== undefined
+          ? {
+              windowMs: val.EMBEDDING_RATE_LIMIT_WINDOW_MS,
+              maxRequests: val.EMBEDDING_RATE_LIMIT_MAX_REQUESTS,
+            }
+          : null,
     },
     crawler: {
       numWorkers: val.CRAWLER_NUM_WORKERS,

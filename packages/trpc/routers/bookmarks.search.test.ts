@@ -375,6 +375,25 @@ describe("bookmark search modes", () => {
     expect(searchMocks.vectorSearch).not.toHaveBeenCalled();
   });
 
+  test<CustomTestContext>("builds the query embedding client without the embedding rate limit", async ({
+    apiCallers,
+  }) => {
+    mockEmbeddingInfra();
+    searchMocks.vectorSearch.mockResolvedValue({
+      hits: [],
+      processingTimeMs: 1,
+    });
+
+    await apiCallers[0].bookmarks.searchBookmarks({
+      text: "semantic query",
+      searchMode: "semantic",
+    });
+
+    expect(searchMocks.buildEmbeddingClient).toHaveBeenCalledWith({
+      rateLimited: false,
+    });
+  });
+
   test<CustomTestContext>("rejects filter-only semantic queries", async ({
     apiCallers,
   }) => {
