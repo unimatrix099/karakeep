@@ -78,8 +78,9 @@ export default function SidebarProfileOptions() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          className="border-new-gray-200 aspect-square rounded-full border-4 bg-black p-0 text-white"
+          className="border-new-gray-200 shrink-0 rounded-full border-4 bg-black p-0 text-white"
           variant="ghost"
+          size="icon"
         >
           <UserAvatar
             image={avatarUrl}

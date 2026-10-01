@@ -106,7 +106,7 @@ const allEnv = z.object({
   SEMANTIC_SEARCH_ENABLED: stringBool("true"),
   INFERENCE_JOB_TIMEOUT_SEC: z.coerce.number().default(30),
   INFERENCE_FETCH_TIMEOUT_SEC: z.coerce.number().default(300),
-  INFERENCE_TEXT_MODEL: z.string().default("gpt-5.6-luna"),
+  INFERENCE_TEXT_MODEL: z.string().default("gpt-6-luna"),
   INFERENCE_IMAGE_MODEL: z.string().default("gpt-4o-mini"),
   EMBEDDING_ENABLE_AUTO_INDEXING: optionalStringBool(),
   EMBEDDING_OPENAI_API_KEY: z.string().optional(),
@@ -161,6 +161,7 @@ const allEnv = z.object({
   CRAWLER_FULL_PAGE_SCREENSHOT: stringBool("false"),
   CRAWLER_STORE_PDF: stringBool("false"),
   CRAWLER_FULL_PAGE_ARCHIVE: stringBool("false"),
+  CRAWLER_FULL_PAGE_ARCHIVE_MAX_SIZE_MB: z.coerce.number().default(0),
   CRAWLER_VIDEO_DOWNLOAD: stringBool("false"),
   CRAWLER_VIDEO_DOWNLOAD_MAX_SIZE: z.coerce.number().default(50),
   CRAWLER_VIDEO_DOWNLOAD_TIMEOUT_SEC: z.coerce.number().default(10 * 60),
@@ -183,7 +184,8 @@ const allEnv = z.object({
   CRAWLER_DOMAIN_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().min(1).optional(),
   CRAWLER_PREFLIGHT_USER_AGENT: z.string().optional(),
   LOG_LEVEL: z.string().default("debug"),
-  NO_COLOR: stringBool("false"),
+  // https://no-color.org/: any nonempty value disables colors.
+  NO_COLOR: z.string().optional().transform(Boolean),
   DEMO_MODE: stringBool("false"),
   DEMO_MODE_EMAIL: z.string().optional(),
   DEMO_MODE_PASSWORD: z.string().optional(),
@@ -441,6 +443,7 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       fullPageScreenshot: val.CRAWLER_FULL_PAGE_SCREENSHOT,
       storePdf: val.CRAWLER_STORE_PDF,
       fullPageArchive: val.CRAWLER_FULL_PAGE_ARCHIVE,
+      fullPageArchiveMaxSizeMb: val.CRAWLER_FULL_PAGE_ARCHIVE_MAX_SIZE_MB,
       downloadVideo: val.CRAWLER_VIDEO_DOWNLOAD,
       maxVideoDownloadSize: val.CRAWLER_VIDEO_DOWNLOAD_MAX_SIZE,
       downloadVideoTimeout: val.CRAWLER_VIDEO_DOWNLOAD_TIMEOUT_SEC,
@@ -533,6 +536,7 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       },
     },
     prometheus: {
+      enabled: val.PROMETHEUS_AUTH_TOKEN !== undefined,
       metricsToken:
         val.PROMETHEUS_AUTH_TOKEN ?? crypto.randomBytes(64).toString("hex"),
     },
