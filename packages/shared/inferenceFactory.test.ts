@@ -129,6 +129,7 @@ describe("rate limit config", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
+    vi.restoreAllMocks();
   });
 
   async function loadConfig(env: Record<string, string>) {
@@ -139,14 +140,40 @@ describe("rate limit config", () => {
     return (await import("./config")).default;
   }
 
-  it("is disabled unless both variables are set", async () => {
+  it("is disabled and warns unless both variables are set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const config = await loadConfig({
       INFERENCE_RATE_LIMIT_WINDOW_MS: "60000",
       EMBEDDING_RATE_LIMIT_MAX_REQUESTS: "10",
     });
     expect(config.inference.rateLimit).toBeNull();
     expect(config.embedding.rateLimit).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      "INFERENCE_RATE_LIMIT_WINDOW_MS and INFERENCE_RATE_LIMIT_MAX_REQUESTS must both be set; inference rate limiting is disabled.",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "EMBEDDING_RATE_LIMIT_WINDOW_MS and EMBEDDING_RATE_LIMIT_MAX_REQUESTS must both be set; embedding rate limiting is disabled.",
+    );
   });
+
+  it("does not warn when neither variable is set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await loadConfig({});
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(["INFERENCE", "EMBEDDING"])(
+    "rejects a non-integer %s_RATE_LIMIT_MAX_REQUESTS",
+    async (prefix) => {
+      await expect(
+        loadConfig({
+          [`${prefix}_RATE_LIMIT_WINDOW_MS`]: "60000",
+          [`${prefix}_RATE_LIMIT_MAX_REQUESTS`]: "1.5",
+        }),
+      ).rejects.toThrow(`${prefix}_RATE_LIMIT_MAX_REQUESTS`);
+    },
+  );
 
   it("parses both limits when fully configured", async () => {
     const config = await loadConfig({
