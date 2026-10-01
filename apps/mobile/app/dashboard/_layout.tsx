@@ -75,6 +75,8 @@ export default function Dashboard() {
         options={{
           headerTitle: "",
           headerBackTitle: "Back",
+          // iOS 27 can leave the automatic back control empty after sign-in.
+          headerBackButtonDisplayMode: "minimal",
           headerLargeTitle: false,
         }}
       />
