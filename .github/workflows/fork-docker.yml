@@ -1,0 +1,86 @@
+# Builds the all-in-one image for this fork and pushes it to
+# ghcr.io/unimatrix099/karakeep. The upstream docker.yml pushes to the
+# karakeep-app registry and should stay disabled on the fork.
+name: Build and Push Fork Docker Image
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/unimatrix099/karakeep
+
+jobs:
+  build:
+    if: github.repository == 'unimatrix099/karakeep'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+            os: ubuntu-latest
+          - platform: linux/arm64
+            suffix: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to Github Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build aio (${{ matrix.suffix }})
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          build-args: SERVER_VERSION=nightly
+          file: docker/Dockerfile
+          target: aio
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.IMAGE }}:latest-${{ matrix.suffix }},${{ env.IMAGE }}:sha-${{ github.sha }}-${{ matrix.suffix }}
+          cache-from: type=gha,scope=aio-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=aio-${{ matrix.suffix }}
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to Github Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifests
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for tag in latest "sha-${SHA}"; do
+            docker buildx imagetools create \
+              -t "${IMAGE}:${tag}" \
+              "${IMAGE}:${tag}-amd64" \
+              "${IMAGE}:${tag}-arm64"
+          done
