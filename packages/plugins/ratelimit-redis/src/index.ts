@@ -2,16 +2,51 @@ import type { RedisClientType } from "redis";
 import { createClient } from "redis";
 
 import type {
+  PacedRateLimitConfig,
+  PacedRateLimitResult,
   RateLimitClient,
   RateLimitConfig,
   RateLimitResult,
 } from "@karakeep/shared/ratelimiting";
 import { throttledLogger } from "@karakeep/shared/logger";
 import { PluginProvider } from "@karakeep/shared/plugins";
+import { gcraParams } from "@karakeep/shared/ratelimitPacing";
 
 const KEY_PREFIX = "ratelimit:v1";
 
 const failOpenLog = throttledLogger(30_000);
+
+// GCRA over N buckets, all-or-nothing. Mirrors evaluateGcra() in
+// @karakeep/shared/ratelimitPacing, but uses Redis' clock so every process
+// agrees on "now". ARGV holds (emissionMs, toleranceMs) per key.
+const PACED_LUA_SCRIPT = `
+  local t = redis.call('TIME')
+  -- Float literals keep the epoch-ms maths in doubles on any Lua version.
+  local now = tonumber(t[1]) * 1000.0 + math.floor(tonumber(t[2]) / 1000.0)
+  local maxWait = 0
+  local newTats = {}
+  for i = 1, #KEYS do
+    local emission = tonumber(ARGV[2 * i - 1])
+    local tolerance = tonumber(ARGV[2 * i])
+    local tat = tonumber(redis.call('GET', KEYS[i]))
+    if (not tat) or tat < now then
+      tat = now
+    end
+    local wait = tat - tolerance - now
+    if wait > maxWait then
+      maxWait = wait
+    end
+    newTats[i] = tat + emission
+  end
+  if maxWait > 0 then
+    return {0, maxWait}
+  end
+  for i = 1, #KEYS do
+    redis.call('SET', KEYS[i], string.format('%.0f', newTats[i]),
+      'PX', string.format('%.0f', newTats[i] - now + 1000))
+  end
+  return {1, 0}
+`;
 
 export class RedisRateLimiter implements RateLimitClient {
   private redis: RedisClientType;
@@ -98,6 +133,44 @@ export class RedisRateLimiter implements RateLimitClient {
       failOpenLog(
         "warn",
         `Rate limiter failed open due to Redis error: ${error}`,
+      );
+      return { allowed: true };
+    }
+  }
+
+  async acquirePaced(
+    config: PacedRateLimitConfig,
+    key: string,
+  ): Promise<PacedRateLimitResult> {
+    if (!key || config.limits.length === 0) {
+      return { allowed: true };
+    }
+
+    const keys = config.limits.map(
+      (_, i) => `${KEY_PREFIX}:paced:${config.name}:${key}:${i}`,
+    );
+    const args = config.limits.flatMap((limit) => {
+      const { emissionMs, toleranceMs } = gcraParams(limit, config.burst);
+      return [emissionMs.toString(), toleranceMs.toString()];
+    });
+
+    try {
+      const result = await this.redis.eval(PACED_LUA_SCRIPT, {
+        keys,
+        arguments: args,
+      });
+      if (!Array.isArray(result) || result.length < 2) {
+        throw new Error("Unexpected Redis eval result");
+      }
+      const [allowed, retryAfterMs] = result.map((value) => Number(value));
+      return allowed === 1
+        ? { allowed: true }
+        : { allowed: false, retryAfterMs };
+    } catch (error) {
+      // On Redis error, fail open (allow the request)
+      failOpenLog(
+        "warn",
+        `Paced rate limiter failed open due to Redis error: ${error}`,
       );
       return { allowed: true };
     }

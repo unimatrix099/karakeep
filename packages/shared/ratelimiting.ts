@@ -1,4 +1,14 @@
+import type {
+  PacedRateLimitConfig,
+  PacedRateLimitResult,
+} from "./ratelimitPacing";
 import { PluginManager, PluginType } from "./plugins";
+
+export type {
+  PacedLimit,
+  PacedRateLimitConfig,
+  PacedRateLimitResult,
+} from "./ratelimitPacing";
 
 export interface RateLimitConfig {
   name: string;
@@ -21,6 +31,19 @@ export interface RateLimitClient {
     config: RateLimitConfig,
     key: string,
   ): RateLimitResult | Promise<RateLimitResult>;
+
+  /**
+   * Paced (token-bucket) rate limiting: allows the request only if every
+   * limit in `config.limits` allows it, spacing requests evenly with up to
+   * `config.burst` back-to-back. A denial consumes nothing and reports how
+   * long to wait.
+   * @param config Paced limit configuration
+   * @param key Unique rate limiting key
+   */
+  acquirePaced(
+    config: PacedRateLimitConfig,
+    key: string,
+  ): PacedRateLimitResult | Promise<PacedRateLimitResult>;
 
   /**
    * Reset rate limit for a specific key

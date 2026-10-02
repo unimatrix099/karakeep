@@ -73,6 +73,9 @@ export class OpenAiWorker {
         concurrency: serverConfig.inference.numWorkers,
         pollIntervalMs: 1000,
         timeoutSecs: serverConfig.inference.jobTimeoutSec,
+        // When the provider rate limit is hit, stop dequeuing until the next
+        // slot instead of picking up (and rescheduling) every queued job.
+        pauseOnRateLimit: true,
       },
     );
 

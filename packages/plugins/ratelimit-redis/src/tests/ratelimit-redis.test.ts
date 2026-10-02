@@ -9,6 +9,8 @@ import {
   it,
 } from "vitest";
 
+import { createClient } from "redis";
+
 import { RedisRateLimiter, RedisRateLimitProvider } from "../index";
 
 describe("RedisRateLimiter", () => {
@@ -208,6 +210,129 @@ describe("RedisRateLimiter", () => {
 
       expect(allowed).toBe(5);
       expect(blocked).toBe(5);
+    });
+  });
+
+  describe("acquirePaced", () => {
+    const sleep = (ms: number) =>
+      new Promise((resolve) => setTimeout(resolve, ms));
+
+    it("allows the burst, then reports the wait for the next slot", async () => {
+      // T = ceil(10_000 / (10 - 3 + 1)) = 1250ms
+      const config = {
+        name: "paced-burst",
+        limits: [{ limit: 10, periodMs: 10_000 }],
+        burst: 3,
+      };
+      for (let i = 0; i < 3; i++) {
+        expect(await rateLimiter.acquirePaced(config, "global")).toEqual({
+          allowed: true,
+        });
+      }
+      const denied = await rateLimiter.acquirePaced(config, "global");
+      assert(!denied.allowed);
+      expect(denied.retryAfterMs).toBeGreaterThan(1_000);
+      expect(denied.retryAfterMs).toBeLessThanOrEqual(1_250);
+
+      await sleep(denied.retryAfterMs + 20);
+      expect((await rateLimiter.acquirePaced(config, "global")).allowed).toBe(
+        true,
+      );
+    });
+
+    it("does not consume anything when denied", async () => {
+      const config = {
+        name: "paced-deny",
+        limits: [{ limit: 1, periodMs: 1_000 }],
+        burst: 1,
+      };
+      expect((await rateLimiter.acquirePaced(config, "k")).allowed).toBe(true);
+      for (let i = 0; i < 5; i++) {
+        expect((await rateLimiter.acquirePaced(config, "k")).allowed).toBe(
+          false,
+        );
+      }
+      await sleep(1_050);
+      expect((await rateLimiter.acquirePaced(config, "k")).allowed).toBe(true);
+    });
+
+    it("requires every limit to allow the request", async () => {
+      const config = {
+        name: "paced-multi",
+        limits: [
+          { limit: 5, periodMs: 1_000 }, // T = 200ms
+          { limit: 1, periodMs: 60_000 }, // T = 60s
+        ],
+        burst: 1,
+      };
+      expect((await rateLimiter.acquirePaced(config, "k")).allowed).toBe(true);
+      await sleep(250);
+      // The fast bucket would allow it, the slow one doesn't.
+      const denied = await rateLimiter.acquirePaced(config, "k");
+      assert(!denied.allowed);
+      expect(denied.retryAfterMs).toBeGreaterThan(55_000);
+      expect(denied.retryAfterMs).toBeLessThanOrEqual(60_000);
+    });
+
+    it("keeps separate state per name and per key", async () => {
+      const config = {
+        name: "inference-ratelimit",
+        limits: [{ limit: 1, periodMs: 60_000 }],
+        burst: 1,
+      };
+      const other = { ...config, name: "embedding-ratelimit" };
+      expect((await rateLimiter.acquirePaced(config, "g")).allowed).toBe(true);
+      expect((await rateLimiter.acquirePaced(config, "g")).allowed).toBe(false);
+      expect((await rateLimiter.acquirePaced(other, "g")).allowed).toBe(true);
+      expect((await rateLimiter.acquirePaced(config, "h")).allowed).toBe(true);
+    });
+
+    it("is atomic under concurrent requests", async () => {
+      const config = {
+        name: "paced-concurrent",
+        limits: [{ limit: 100, periodMs: 60_000 }],
+        burst: 5,
+      };
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          rateLimiter.acquirePaced(config, "global"),
+        ),
+      );
+      expect(results.filter((r) => r.allowed)).toHaveLength(5);
+    });
+
+    it("sets an expiry on its keys and is removed by clear()", async () => {
+      const config = {
+        name: "paced-ttl",
+        limits: [{ limit: 2, periodMs: 10_000 }],
+        burst: 1,
+      };
+      const key = "ratelimit:v1:paced:paced-ttl:k:0";
+      const inspector = createClient({
+        url: `redis://localhost:${inject("redisPort")}`,
+      });
+      await inspector.connect();
+      try {
+        await rateLimiter.acquirePaced(config, "k");
+        const pttl = await inspector.pTTL(key);
+        expect(pttl).toBeGreaterThan(0);
+        // T = 5000ms; expiry is the time until the bucket is idle again + 1s.
+        expect(pttl).toBeLessThanOrEqual(6_000);
+
+        await rateLimiter.clear();
+        expect(await inspector.exists(key)).toBe(0);
+      } finally {
+        await inspector.close();
+      }
+    });
+
+    it("allows everything when no limits are configured", async () => {
+      expect(
+        await rateLimiter.acquirePaced(
+          { name: "paced-none", limits: [], burst: 1 },
+          "k",
+        ),
+      ).toEqual({ allowed: true });
     });
   });
 });

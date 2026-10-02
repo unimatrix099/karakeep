@@ -252,4 +252,103 @@ describe("RateLimiter", () => {
       expect(result.allowed).toBe(true);
     });
   });
+
+  describe("acquirePaced", () => {
+    const config = {
+      name: "paced",
+      // T = ceil(60000 / (20 - 3 + 1)) = 3334ms; day T = ceil(86.4M / 998)
+      limits: [
+        { limit: 20, periodMs: 60_000 },
+        { limit: 1000, periodMs: 86_400_000 },
+      ],
+      burst: 3,
+    };
+
+    it("allows the burst, then reports the exact wait", () => {
+      vi.setSystemTime(0);
+      for (let i = 0; i < 3; i++) {
+        expect(rateLimiter.acquirePaced(config, "global")).toEqual({
+          allowed: true,
+        });
+      }
+      const denied = rateLimiter.acquirePaced(config, "global");
+      assert(!denied.allowed);
+      // The day bucket is the slower one: ceil(86_400_000 / 998) = 86_574
+      expect(denied.retryAfterMs).toBe(86_574);
+
+      vi.setSystemTime(86_573);
+      expect(rateLimiter.acquirePaced(config, "global").allowed).toBe(false);
+      vi.setSystemTime(86_574);
+      expect(rateLimiter.acquirePaced(config, "global").allowed).toBe(true);
+    });
+
+    it("does not consume anything when denied", () => {
+      vi.setSystemTime(0);
+      const single = {
+        name: "single",
+        limits: [{ limit: 1, periodMs: 60_000 }],
+        burst: 1,
+      };
+      expect(rateLimiter.acquirePaced(single, "k").allowed).toBe(true);
+      for (let i = 0; i < 5; i++) {
+        expect(rateLimiter.acquirePaced(single, "k").allowed).toBe(false);
+      }
+      // Repeated denials must not push the next slot further out.
+      vi.setSystemTime(60_000);
+      expect(rateLimiter.acquirePaced(single, "k").allowed).toBe(true);
+    });
+
+    it("keeps separate state per name and per key", () => {
+      vi.setSystemTime(0);
+      const single = {
+        name: "inference-ratelimit",
+        limits: [{ limit: 1, periodMs: 60_000 }],
+        burst: 1,
+      };
+      const other = { ...single, name: "embedding-ratelimit" };
+      expect(rateLimiter.acquirePaced(single, "global").allowed).toBe(true);
+      expect(rateLimiter.acquirePaced(single, "global").allowed).toBe(false);
+      expect(rateLimiter.acquirePaced(other, "global").allowed).toBe(true);
+      expect(rateLimiter.acquirePaced(single, "other-key").allowed).toBe(true);
+    });
+
+    it("is not affected by fixed-window state with the same name", () => {
+      vi.setSystemTime(0);
+      rateLimiter.checkRateLimit(
+        { name: "shared", windowMs: 60_000, maxRequests: 1 },
+        "k",
+      );
+      expect(
+        rateLimiter.acquirePaced(
+          { name: "shared", limits: [{ limit: 1, periodMs: 60_000 }], burst: 1 },
+          "k",
+        ).allowed,
+      ).toBe(true);
+    });
+
+    it("forgets idle buckets during cleanup", () => {
+      vi.setSystemTime(0);
+      const single = {
+        name: "cleanup",
+        limits: [{ limit: 1, periodMs: 60_000 }],
+        burst: 1,
+      };
+      const limiter = new RateLimiter(1); // always clean up
+      limiter.acquirePaced(single, "k");
+      expect(limiter.size).toBe(1);
+      vi.setSystemTime(120_000);
+      limiter.acquirePaced(
+        { ...single, name: "unrelated" },
+        "k",
+      );
+      // The idle "cleanup" bucket is gone, only the new one remains.
+      expect(limiter.size).toBe(1);
+    });
+
+    it("allows everything when no limits are configured", () => {
+      expect(
+        rateLimiter.acquirePaced({ name: "none", limits: [], burst: 1 }, "k"),
+      ).toEqual({ allowed: true });
+    });
+  });
 });

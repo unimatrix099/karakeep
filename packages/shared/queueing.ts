@@ -8,12 +8,21 @@ import { PluginManager, PluginType } from "./plugins";
  * Useful for handling rate limiting scenarios.
  */
 export class QueueRetryAfterError extends Error {
+  /**
+   * When true, runners created with `pauseOnRateLimit` also stop dequeuing
+   * jobs for `delayMs`, instead of immediately dequeuing the next job (which
+   * would most likely hit the same limit).
+   */
+  public readonly pauseQueue: boolean;
+
   constructor(
     message: string,
     public readonly delayMs: number,
+    opts?: { pauseQueue?: boolean },
   ) {
     super(message);
     this.name = "QueueRetryAfterError";
+    this.pauseQueue = opts?.pauseQueue ?? false;
   }
 }
 
@@ -69,6 +78,11 @@ export interface RunnerOptions<T> {
   timeoutSecs: number;
   concurrency: number;
   validator?: ZodType<T>;
+  /**
+   * Stop dequeuing while a job's QueueRetryAfterError asks to pause the queue.
+   * Only for queues whose jobs all share the limit that triggered it.
+   */
+  pauseOnRateLimit?: boolean;
 }
 
 export interface Queue<T> {

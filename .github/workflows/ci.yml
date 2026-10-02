@@ -80,6 +80,14 @@ jobs:
       #   working-directory: packages/plugins
       #   run: pnpm test
 
+      - name: Plugins Unit Tests
+        working-directory: packages/plugins
+        run: pnpm test:unit
+
+      - name: Rate Limit Redis Tests
+        working-directory: packages/plugins
+        run: pnpm test:redis
+
       - name: Install Playwright Chromium
         working-directory: packages/e2e_tests
         run: pnpm exec playwright install --with-deps chromium

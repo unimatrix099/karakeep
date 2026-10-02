@@ -22,7 +22,9 @@
     "format:fix": "oxfmt --ignore-path=../../.gitignore .",
     "lint": "oxlint --ignore-path=../../.gitignore .",
     "lint:fix": "oxlint --ignore-path=../../.gitignore . --fix",
-    "test": "vitest"
+    "test": "vitest",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:redis": "vitest run --config vitest.redis.config.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1135.0",

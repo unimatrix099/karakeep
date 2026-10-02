@@ -62,6 +62,26 @@ class LitequeQueueWrapper<T> implements Queue<T> {
   }
 }
 
+/**
+ * Wraps a liteque queue so that attemptDequeue() reports "no job" while the
+ * runner is paused. liteque's runner then just sleeps pollIntervalMs: no job
+ * is dequeued, so nothing is rescheduled and no SQLite writes happen.
+ */
+function withDequeuePause<T>(lq: LQ<T>, pausedUntil: () => number): LQ<T> {
+  return new Proxy(lq, {
+    get(target, prop, receiver) {
+      if (prop === "attemptDequeue") {
+        return (...args: Parameters<LQ<T>["attemptDequeue"]>) =>
+          Date.now() < pausedUntil()
+            ? Promise.resolve(null)
+            : target.attemptDequeue(...args);
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 class LitequeQueueClient implements QueueClient {
   private db = buildDBClient(path.join(serverConfig.dataDir, "queue.db"), {
     walEnabled: serverConfig.database.walMode,
@@ -105,12 +125,17 @@ class LitequeQueueClient implements QueueClient {
       throw new Error(`Queue ${name} not found`);
     }
 
+    let pausedUntil = 0;
+
     // Wrap the run function to translate QueueRetryAfterError to liteque's RetryAfterError
     const wrappedRun = async (job: DequeuedJob<T>): Promise<R> => {
       try {
         return await funcs.run(job);
       } catch (error) {
         if (error instanceof QueueRetryAfterError) {
+          if (opts.pauseOnRateLimit && error.pauseQueue) {
+            pausedUntil = Math.max(pausedUntil, Date.now() + error.delayMs);
+          }
           // Translate to liteque's native RetryAfterError
           // This will cause liteque to retry after the delay without counting against attempts
           throw new RetryAfterError(error.delayMs);
@@ -121,7 +146,9 @@ class LitequeQueueClient implements QueueClient {
     };
 
     const runner = new LQRunner<T, R>(
-      wrapper._impl,
+      opts.pauseOnRateLimit
+        ? withDequeuePause(wrapper._impl, () => pausedUntil)
+        : wrapper._impl,
       {
         run: wrappedRun,
         onComplete: funcs.onComplete,
