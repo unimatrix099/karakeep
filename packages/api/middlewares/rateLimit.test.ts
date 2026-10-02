@@ -34,6 +34,7 @@ describe("createRateLimitMiddleware", () => {
 
   const client: RateLimitClient = {
     checkRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
+    acquirePaced: vi.fn(),
     reset: vi.fn(),
     clear: vi.fn(),
   };

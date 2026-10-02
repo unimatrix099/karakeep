@@ -1,9 +1,12 @@
 import type {
+  PacedRateLimitConfig,
+  PacedRateLimitResult,
   RateLimitClient,
   RateLimitConfig,
   RateLimitResult,
 } from "@karakeep/shared/ratelimiting";
 import { PluginProvider } from "@karakeep/shared/plugins";
+import { evaluateGcra, gcraParams } from "@karakeep/shared/ratelimitPacing";
 
 interface RateLimitEntry {
   count: number;
@@ -12,6 +15,8 @@ interface RateLimitEntry {
 
 export class RateLimiter implements RateLimitClient {
   private store = new Map<string, RateLimitEntry>();
+  // Theoretical arrival time per paced bucket ("name:key:limitIndex").
+  private pacedStore = new Map<string, number>();
   private cleanupProbability: number;
 
   constructor(cleanupProbability = 0.01) {
@@ -26,6 +31,43 @@ export class RateLimiter implements RateLimitClient {
         this.store.delete(key);
       }
     }
+    for (const [key, tat] of this.pacedStore.entries()) {
+      // A bucket whose arrival time has passed holds no information.
+      if (tat <= now) {
+        this.pacedStore.delete(key);
+      }
+    }
+  }
+
+  get size(): number {
+    return this.store.size + this.pacedStore.size;
+  }
+
+  acquirePaced(
+    config: PacedRateLimitConfig,
+    key: string,
+  ): PacedRateLimitResult {
+    if (!key || config.limits.length === 0) {
+      return { allowed: true };
+    }
+
+    if (Math.random() < this.cleanupProbability) {
+      this.cleanupExpiredEntries();
+    }
+
+    const keys = config.limits.map(
+      (_, i) => `paced:${config.name}:${key}:${i}`,
+    );
+    const result = evaluateGcra(
+      keys.map((k) => this.pacedStore.get(k)),
+      config.limits.map((l) => gcraParams(l, config.burst)),
+      Date.now(),
+    );
+    if (!result.allowed) {
+      return result;
+    }
+    result.tats.forEach((tat, i) => this.pacedStore.set(keys[i], tat));
+    return { allowed: true };
   }
 
   checkRateLimit(config: RateLimitConfig, key: string): RateLimitResult {
@@ -71,6 +113,7 @@ export class RateLimiter implements RateLimitClient {
 
   clear() {
     this.store.clear();
+    this.pacedStore.clear();
   }
 }
 

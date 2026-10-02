@@ -68,6 +68,9 @@ export class EmbeddingsWorker {
         concurrency: serverConfig.embedding.numWorkers,
         pollIntervalMs: 1000,
         timeoutSecs: serverConfig.embedding.jobTimeoutSec,
+        // When the provider rate limit is hit, stop dequeuing until the next
+        // slot instead of picking up (and rescheduling) every queued job.
+        pauseOnRateLimit: true,
         validator: zEmbeddingsRequestSchema,
       },
     );

@@ -31,22 +31,55 @@ const oauthIdTokenSignedResponseAlg = z.enum([
   "EdDSA",
 ]);
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
 function providerRateLimit(
   prefix: "INFERENCE" | "EMBEDDING",
-  windowMs: number | undefined,
-  maxRequests: number | undefined,
-): { windowMs: number; maxRequests: number } | null {
-  if (windowMs !== undefined && maxRequests !== undefined) {
-    return { windowMs, maxRequests };
-  }
-  if (windowMs !== undefined || maxRequests !== undefined) {
-    // The logger depends on this module, so warn directly. Config is parsed
-    // once per process, so this prints once at startup.
+  env: {
+    perMinute: number | undefined;
+    perHour: number | undefined;
+    perDay: number | undefined;
+    burst: number | undefined;
+    legacyWindowMs: string | undefined;
+    legacyMaxRequests: string | undefined;
+  },
+): { limits: { limit: number; periodMs: number }[]; burst: number } | null {
+  // The logger depends on this module, so warn directly. Config is parsed
+  // once per process, so these print once at startup.
+  if (env.legacyWindowMs !== undefined || env.legacyMaxRequests !== undefined) {
     console.warn(
-      `${prefix}_RATE_LIMIT_WINDOW_MS and ${prefix}_RATE_LIMIT_MAX_REQUESTS must both be set; ${prefix.toLowerCase()} rate limiting is disabled.`,
+      `${prefix}_RATE_LIMIT_WINDOW_MS and ${prefix}_RATE_LIMIT_MAX_REQUESTS are no longer supported and are ignored; use ${prefix}_RATE_LIMIT_PER_MINUTE/PER_HOUR/PER_DAY and ${prefix}_RATE_LIMIT_BURST instead.`,
     );
   }
-  return null;
+
+  const limits = [
+    { limit: env.perMinute, periodMs: MINUTE_MS },
+    { limit: env.perHour, periodMs: HOUR_MS },
+    { limit: env.perDay, periodMs: DAY_MS },
+  ].filter(
+    (l): l is { limit: number; periodMs: number } => l.limit !== undefined,
+  );
+
+  if (limits.length === 0) {
+    if (env.burst !== undefined) {
+      console.warn(
+        `${prefix}_RATE_LIMIT_BURST is set but no ${prefix}_RATE_LIMIT_PER_MINUTE/PER_HOUR/PER_DAY limit is; ${prefix.toLowerCase()} rate limiting is disabled.`,
+      );
+    }
+    return null;
+  }
+
+  const smallest = Math.min(...limits.map((l) => l.limit));
+  let burst = env.burst ?? 1;
+  if (burst > smallest) {
+    console.warn(
+      `${prefix}_RATE_LIMIT_BURST (${burst}) is larger than the smallest configured limit (${smallest}); using ${smallest}.`,
+    );
+    burst = smallest;
+  }
+  return { limits, burst };
 }
 
 const allEnv = z.object({
@@ -121,8 +154,13 @@ const allEnv = z.object({
   EMBEDDING_CONTEXT_LENGTH: z.coerce.number().int().positive().default(8000),
   EMBEDDING_NUM_WORKERS: z.coerce.number().default(1),
   EMBEDDING_JOB_TIMEOUT_SEC: z.coerce.number().default(60),
-  EMBEDDING_RATE_LIMIT_WINDOW_MS: z.coerce.number().min(1).optional(),
-  EMBEDDING_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).optional(),
+  EMBEDDING_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).optional(),
+  EMBEDDING_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(1).optional(),
+  EMBEDDING_RATE_LIMIT_PER_DAY: z.coerce.number().int().min(1).optional(),
+  EMBEDDING_RATE_LIMIT_BURST: z.coerce.number().int().min(1).optional(),
+  // Removed fixed-window settings, only read to warn that they're ignored.
+  EMBEDDING_RATE_LIMIT_WINDOW_MS: z.string().optional(),
+  EMBEDDING_RATE_LIMIT_MAX_REQUESTS: z.string().optional(),
   INFERENCE_CONTEXT_LENGTH: z.coerce.number().default(2048),
   INFERENCE_MAX_OUTPUT_TOKENS: z.coerce.number().default(2048),
   INFERENCE_USE_MAX_COMPLETION_TOKENS: optionalStringBool(),
@@ -148,8 +186,13 @@ const allEnv = z.object({
   CRAWLER_NAVIGATE_TIMEOUT_SEC: z.coerce.number().default(30),
   CRAWLER_NUM_WORKERS: z.coerce.number().default(1),
   INFERENCE_NUM_WORKERS: z.coerce.number().default(1),
-  INFERENCE_RATE_LIMIT_WINDOW_MS: z.coerce.number().min(1).optional(),
-  INFERENCE_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).optional(),
+  INFERENCE_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).optional(),
+  INFERENCE_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(1).optional(),
+  INFERENCE_RATE_LIMIT_PER_DAY: z.coerce.number().int().min(1).optional(),
+  INFERENCE_RATE_LIMIT_BURST: z.coerce.number().int().min(1).optional(),
+  // Removed fixed-window settings, only read to warn that they're ignored.
+  INFERENCE_RATE_LIMIT_WINDOW_MS: z.string().optional(),
+  INFERENCE_RATE_LIMIT_MAX_REQUESTS: z.string().optional(),
   SEARCH_NUM_WORKERS: z.coerce.number().default(1),
   SEARCH_JOB_TIMEOUT_SEC: z.coerce.number().default(30),
   WEBHOOK_NUM_WORKERS: z.coerce.number().default(1),
@@ -361,11 +404,14 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       numWorkers: val.INFERENCE_NUM_WORKERS,
       jobTimeoutSec: val.INFERENCE_JOB_TIMEOUT_SEC,
       fetchTimeoutSec: val.INFERENCE_FETCH_TIMEOUT_SEC,
-      rateLimit: providerRateLimit(
-        "INFERENCE",
-        val.INFERENCE_RATE_LIMIT_WINDOW_MS,
-        val.INFERENCE_RATE_LIMIT_MAX_REQUESTS,
-      ),
+      rateLimit: providerRateLimit("INFERENCE", {
+        perMinute: val.INFERENCE_RATE_LIMIT_PER_MINUTE,
+        perHour: val.INFERENCE_RATE_LIMIT_PER_HOUR,
+        perDay: val.INFERENCE_RATE_LIMIT_PER_DAY,
+        burst: val.INFERENCE_RATE_LIMIT_BURST,
+        legacyWindowMs: val.INFERENCE_RATE_LIMIT_WINDOW_MS,
+        legacyMaxRequests: val.INFERENCE_RATE_LIMIT_MAX_REQUESTS,
+      }),
       openAIApiKey: val.OPENAI_API_KEY,
       openAIBaseUrl: val.OPENAI_BASE_URL,
       openAIProxyUrl: val.OPENAI_PROXY_URL,
@@ -423,11 +469,14 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
       contextLength: val.EMBEDDING_CONTEXT_LENGTH,
       numWorkers: val.EMBEDDING_NUM_WORKERS,
       jobTimeoutSec: val.EMBEDDING_JOB_TIMEOUT_SEC,
-      rateLimit: providerRateLimit(
-        "EMBEDDING",
-        val.EMBEDDING_RATE_LIMIT_WINDOW_MS,
-        val.EMBEDDING_RATE_LIMIT_MAX_REQUESTS,
-      ),
+      rateLimit: providerRateLimit("EMBEDDING", {
+        perMinute: val.EMBEDDING_RATE_LIMIT_PER_MINUTE,
+        perHour: val.EMBEDDING_RATE_LIMIT_PER_HOUR,
+        perDay: val.EMBEDDING_RATE_LIMIT_PER_DAY,
+        burst: val.EMBEDDING_RATE_LIMIT_BURST,
+        legacyWindowMs: val.EMBEDDING_RATE_LIMIT_WINDOW_MS,
+        legacyMaxRequests: val.EMBEDDING_RATE_LIMIT_MAX_REQUESTS,
+      }),
     },
     crawler: {
       numWorkers: val.CRAWLER_NUM_WORKERS,

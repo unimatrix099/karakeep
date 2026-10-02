@@ -5,14 +5,14 @@ import type {
   InferenceOptions,
   InferenceResponse,
 } from "./inference";
-import type { RateLimitClient } from "./ratelimiting";
+import type { PacedLimit, RateLimitClient } from "./ratelimiting";
 import logger from "./logger";
 import { QueueRetryAfterError } from "./queueing";
 import { getRateLimitClient } from "./ratelimiting";
 
 export interface ProviderRateLimit {
-  windowMs: number;
-  maxRequests: number;
+  limits: PacedLimit[];
+  burst: number;
 }
 
 type RateLimitKind = "inference" | "embedding";
@@ -22,20 +22,27 @@ type RateLimitClientGetter = () => Promise<RateLimitClient | null>;
 /**
  * Thrown when a provider call is rejected by the configured rate limit.
  * Extends QueueRetryAfterError so that queue runners reschedule the job after
- * `delayMs` without counting it against the job's retry attempts.
+ * `delayMs` without counting it against the job's retry attempts, and asks
+ * the runner to pause dequeuing until then.
  */
 export class InferenceRateLimitedError extends QueueRetryAfterError {
+  public readonly resetInSeconds: number;
+
   constructor(
     public readonly kind: RateLimitKind,
-    public readonly resetInSeconds: number,
+    public readonly retryAfterMs: number,
   ) {
-    // Add jitter to prevent thundering herd: +40% random variation
-    const jitterFactor = 1.0 + Math.random() * 0.4;
+    const resetInSeconds = Math.ceil(retryAfterMs / 1000);
+    // The paced limiter reports the exact wait and the paused queue avoids a
+    // thundering herd, so only a little jitter is needed: up to 10%, max 1s.
+    const jitterMs = Math.min(retryAfterMs * 0.1, 1000) * Math.random();
     super(
       `${kind} rate limit reached, retry in ${resetInSeconds}s`,
-      Math.floor(Math.max(resetInSeconds, 1) * 1000 * jitterFactor),
+      Math.floor(retryAfterMs + jitterMs),
+      { pauseQueue: true },
     );
     this.name = "InferenceRateLimitedError";
+    this.resetInSeconds = resetInSeconds;
   }
 }
 
@@ -49,18 +56,14 @@ async function assertWithinLimit(
     // No rate limiter available, fail open.
     return;
   }
-  const result = await client.checkRateLimit(
-    {
-      name: `${kind}-ratelimit`,
-      windowMs: limit.windowMs,
-      maxRequests: limit.maxRequests,
-    },
+  const result = await client.acquirePaced(
+    { name: `${kind}-ratelimit`, limits: limit.limits, burst: limit.burst },
     "global",
   );
   if (!result.allowed) {
-    const error = new InferenceRateLimitedError(kind, result.resetInSeconds);
+    const error = new InferenceRateLimitedError(kind, result.retryAfterMs);
     logger.info(
-      `[${kind}] Rate limit reached, retrying in ${(error.delayMs / 1000).toFixed(2)} seconds (with jitter).`,
+      `[${kind}] Rate limit reached, next slot in ${(error.delayMs / 1000).toFixed(2)} seconds.`,
     );
     throw error;
   }

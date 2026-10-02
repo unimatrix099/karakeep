@@ -39,7 +39,7 @@ describe("bookmark summarization", () => {
       type: BookmarkTypes.LINK,
     });
     inferenceMocks.inferFromText.mockRejectedValue(
-      new InferenceRateLimitedError("inference", 30),
+      new InferenceRateLimitedError("inference", 30_000),
     );
 
     await expect(
