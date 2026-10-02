@@ -70,9 +70,7 @@ describe("gcraParams", () => {
 
   it("rounds the spacing up to whole milliseconds", () => {
     // 60_000 / 7 = 8571.43 -> 8572
-    expect(gcraParams({ limit: 7, periodMs: MINUTE }, 1).emissionMs).toBe(
-      8572,
-    );
+    expect(gcraParams({ limit: 7, periodMs: MINUTE }, 1).emissionMs).toBe(8572);
   });
 
   it("clamps the burst to the limit", () => {
@@ -157,11 +155,31 @@ describe("evaluateGcra", () => {
 
 describe("rolling-window guarantee (greedy client, 3 simulated days)", () => {
   const cases: { name: string; limits: PacedLimit[]; burst: number }[] = [
-    { name: "20/min + 1000/day, burst 1", limits: [perMinute(20), perDay(1000)], burst: 1 },
-    { name: "20/min + 1000/day, burst 10", limits: [perMinute(20), perDay(1000)], burst: 10 },
-    { name: "20/min + 1000/day, burst 20", limits: [perMinute(20), perDay(1000)], burst: 20 },
-    { name: "40/min + 1000/day, burst 10", limits: [perMinute(40), perDay(1000)], burst: 10 },
-    { name: "7/min + 100/hour, burst 3", limits: [perMinute(7), { limit: 100, periodMs: HOUR }], burst: 3 },
+    {
+      name: "20/min + 1000/day, burst 1",
+      limits: [perMinute(20), perDay(1000)],
+      burst: 1,
+    },
+    {
+      name: "20/min + 1000/day, burst 10",
+      limits: [perMinute(20), perDay(1000)],
+      burst: 10,
+    },
+    {
+      name: "20/min + 1000/day, burst 20",
+      limits: [perMinute(20), perDay(1000)],
+      burst: 20,
+    },
+    {
+      name: "40/min + 1000/day, burst 10",
+      limits: [perMinute(40), perDay(1000)],
+      burst: 10,
+    },
+    {
+      name: "7/min + 100/hour, burst 3",
+      limits: [perMinute(7), { limit: 100, periodMs: HOUR }],
+      burst: 3,
+    },
     { name: "20/min only, burst 5", limits: [perMinute(20)], burst: 5 },
   ];
 

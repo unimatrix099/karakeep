@@ -103,12 +103,9 @@ describe("liteque runner pause on rate limit", () => {
   });
 
   it("keeps dequeuing immediately when pauseOnRateLimit is off", async () => {
-    const { queue, runner, calls } = await startQueue(
-      async (job, attempt) => {
-        if (job.data.name === "a" && attempt === 1) throw pauseError(1_000);
-      },
-      {},
-    );
+    const { queue, runner, calls } = await startQueue(async (job, attempt) => {
+      if (job.data.name === "a" && attempt === 1) throw pauseError(1_000);
+    }, {});
     await queue.enqueue({ name: "a" });
     await queue.enqueue({ name: "b" });
 

@@ -41,9 +41,8 @@ describe("rate limit pause per worker", () => {
   });
 
   it("does not pause asset preprocessing (most of its jobs don't use the LLM)", async () => {
-    const { AssetPreprocessingWorker } = await import(
-      "./assetPreprocessingWorker"
-    );
+    const { AssetPreprocessingWorker } =
+      await import("./assetPreprocessingWorker");
     await AssetPreprocessingWorker.build();
     expect(lastRunnerOptions().pauseOnRateLimit).toBeFalsy();
   });

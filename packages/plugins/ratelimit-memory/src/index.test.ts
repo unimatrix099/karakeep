@@ -320,7 +320,11 @@ describe("RateLimiter", () => {
       );
       expect(
         rateLimiter.acquirePaced(
-          { name: "shared", limits: [{ limit: 1, periodMs: 60_000 }], burst: 1 },
+          {
+            name: "shared",
+            limits: [{ limit: 1, periodMs: 60_000 }],
+            burst: 1,
+          },
           "k",
         ).allowed,
       ).toBe(true);
@@ -337,10 +341,7 @@ describe("RateLimiter", () => {
       limiter.acquirePaced(single, "k");
       expect(limiter.size).toBe(1);
       vi.setSystemTime(120_000);
-      limiter.acquirePaced(
-        { ...single, name: "unrelated" },
-        "k",
-      );
+      limiter.acquirePaced({ ...single, name: "unrelated" }, "k");
       // The idle "cleanup" bucket is gone, only the new one remains.
       expect(limiter.size).toBe(1);
     });

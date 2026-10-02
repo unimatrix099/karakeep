@@ -45,7 +45,9 @@ export function evaluateGcra(
   tats: readonly (number | undefined)[],
   params: readonly GcraParams[],
   now: number,
-): { allowed: true; tats: number[] } | { allowed: false; retryAfterMs: number } {
+):
+  | { allowed: true; tats: number[] }
+  | { allowed: false; retryAfterMs: number } {
   let retryAfterMs = 0;
   const effectiveTats = params.map((_, i) => Math.max(tats[i] ?? now, now));
   params.forEach((p, i) => {

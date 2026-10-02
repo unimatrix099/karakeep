@@ -58,7 +58,9 @@ function providerRateLimit(
     { limit: env.perMinute, periodMs: MINUTE_MS },
     { limit: env.perHour, periodMs: HOUR_MS },
     { limit: env.perDay, periodMs: DAY_MS },
-  ].filter((l): l is { limit: number; periodMs: number } => l.limit !== undefined);
+  ].filter(
+    (l): l is { limit: number; periodMs: number } => l.limit !== undefined,
+  );
 
   if (limits.length === 0) {
     if (env.burst !== undefined) {
