@@ -291,6 +291,13 @@ const allEnv = z.object({
 
   // Database configuration
   DB_WAL_MODE: stringBool("false"),
+  // better-sqlite3 rejects timeouts above 2^31 - 1.
+  DB_BUSY_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(2147483647)
+    .default(5000),
 
   // OpenTelemetry tracing configuration
   OTEL_TRACING_ENABLED: stringBool("false"),
@@ -568,6 +575,7 @@ const serverConfigSchema = allEnv.transform((val, ctx) => {
     },
     database: {
       walMode: val.DB_WAL_MODE,
+      busyTimeoutMs: val.DB_BUSY_TIMEOUT_MS,
     },
     tracing: {
       enabled: val.OTEL_TRACING_ENABLED,

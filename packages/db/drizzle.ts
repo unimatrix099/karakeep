@@ -15,6 +15,7 @@ import { openSqliteDatabase } from "./sqlite";
 const sqlite = openSqliteDatabase(dbConfig.dbCredentials.url, {
   readOnly: serverConfig.degradedMode,
   walMode: serverConfig.database.walMode,
+  busyTimeoutMs: serverConfig.database.busyTimeoutMs,
 });
 
 instrumentDatabase(sqlite);

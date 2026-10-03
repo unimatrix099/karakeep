@@ -27,6 +27,7 @@ import {
   WebhookQueue,
   zAdminMaintenanceTaskSchema,
 } from "@karakeep/shared-server";
+import { runInChunks } from "@karakeep/shared/concurrency";
 import serverConfig from "@karakeep/shared/config";
 import logger from "@karakeep/shared/logger";
 import { PluginManager, PluginType } from "@karakeep/shared/plugins";
@@ -59,6 +60,35 @@ function modifiedWithin(modifiedWithinSeconds?: number) {
         bookmarks.modifiedAt,
         new Date(Date.now() - modifiedWithinSeconds * 1000),
       );
+}
+
+// Bulk admin jobs walk the matching bookmarks in keyset-paginated pages (so we
+// never hold every id in memory) and enqueue each page in small chunks with a
+// pause in between. The queue lives in SQLite, and an unbroken burst of
+// enqueues from the web process holds the write lock long enough for the
+// workers to fail with SQLITE_BUSY.
+const ADMIN_JOB_PAGE_SIZE = 1000;
+
+async function forEachIdPage(
+  fetchPage: (
+    afterId: string | undefined,
+    limit: number,
+  ) => Promise<{ id: string }[]>,
+  fn: (ids: string[]) => Promise<void>,
+) {
+  let cursor: string | undefined = undefined;
+  for (;;) {
+    const page = await fetchPage(cursor, ADMIN_JOB_PAGE_SIZE);
+    if (page.length === 0) {
+      return;
+    }
+    const ids = page.map((b) => b.id);
+    await fn(ids);
+    if (page.length < ADMIN_JOB_PAGE_SIZE) {
+      return;
+    }
+    cursor = ids[ids.length - 1];
+  }
 }
 
 export const adminAppRouter = router({
@@ -271,30 +301,34 @@ export const adminAppRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const bookmarkIds = await ctx.db
-        .select({ id: bookmarkLinks.id })
-        .from(bookmarkLinks)
-        .innerJoin(bookmarks, eq(bookmarkLinks.id, bookmarks.id))
-        .where(
-          and(
-            input.crawlStatus === "all"
-              ? undefined
-              : eq(bookmarkLinks.crawlStatus, input.crawlStatus),
-            modifiedWithin(input.modifiedWithinSeconds),
-          ),
-        );
-
-      await Promise.all(
-        bookmarkIds.map((b) => {
-          const payload = {
-            bookmarkId: b.id,
-            runInference: input.runInference,
-          };
-          return LowPriorityCrawlerQueue.enqueue(payload, {
-            priority: QueuePriority.Low,
-            idempotencyKey: buildCrawlIdempotencyKey(payload),
-          });
-        }),
+      await forEachIdPage(
+        (afterId, limit) =>
+          ctx.db
+            .select({ id: bookmarkLinks.id })
+            .from(bookmarkLinks)
+            .innerJoin(bookmarks, eq(bookmarkLinks.id, bookmarks.id))
+            .where(
+              and(
+                input.crawlStatus === "all"
+                  ? undefined
+                  : eq(bookmarkLinks.crawlStatus, input.crawlStatus),
+                modifiedWithin(input.modifiedWithinSeconds),
+                afterId ? gt(bookmarkLinks.id, afterId) : undefined,
+              ),
+            )
+            .orderBy(asc(bookmarkLinks.id))
+            .limit(limit),
+        (ids) =>
+          runInChunks(ids, (id) => {
+            const payload = {
+              bookmarkId: id,
+              runInference: input.runInference,
+            };
+            return LowPriorityCrawlerQueue.enqueue(payload, {
+              priority: QueuePriority.Low,
+              idempotencyKey: buildCrawlIdempotencyKey(payload),
+            });
+          }),
       );
     }),
   reindexAllBookmarks: adminBookmarksProcedure
@@ -311,17 +345,25 @@ export const adminAppRouter = router({
         const searchIdx = await getSearchClient();
         await searchIdx?.clearIndex();
       }
-      const bookmarkIds = await ctx.db
-        .select({ id: bookmarks.id })
-        .from(bookmarks)
-        .where(modifiedWithin(input?.modifiedWithinSeconds));
-
-      await Promise.all(
-        bookmarkIds.map((b) =>
-          triggerSearchReindex(b.id, {
-            priority: QueuePriority.Low,
-          }),
-        ),
+      await forEachIdPage(
+        (afterId, limit) =>
+          ctx.db
+            .select({ id: bookmarks.id })
+            .from(bookmarks)
+            .where(
+              and(
+                modifiedWithin(input?.modifiedWithinSeconds),
+                afterId ? gt(bookmarks.id, afterId) : undefined,
+              ),
+            )
+            .orderBy(asc(bookmarks.id))
+            .limit(limit),
+        (ids) =>
+          runInChunks(ids, (id) =>
+            triggerSearchReindex(id, {
+              priority: QueuePriority.Low,
+            }),
+          ),
       );
     }),
   regenerateAllBookmarkEmbeddings: adminBookmarksProcedure
@@ -343,41 +385,34 @@ export const adminAppRouter = router({
         await vectorStore?.clearIndex();
       }
 
-      // Stream through the matching bookmarks in keyset-paginated batches so we
-      // never load every id into memory at once. For "all"/"failure" we flip the
-      // page to "pending" before enqueueing (avoids overwriting a worker-set
-      // status), which also consumes the "failure" filter as we advance.
-      const PAGE_SIZE = 1000;
-      let cursor: string | undefined = undefined;
-      for (;;) {
-        const page = await ctx.db
-          .select({ id: bookmarks.id })
-          .from(bookmarks)
-          .where(
-            and(
-              status === "all"
-                ? undefined
-                : eq(bookmarks.embeddingStatus, status),
-              modifiedAtFilter,
-              cursor ? gt(bookmarks.id, cursor) : undefined,
-            ),
-          )
-          .orderBy(asc(bookmarks.id))
-          .limit(PAGE_SIZE);
-        if (page.length === 0) {
-          break;
-        }
+      // For "all"/"failure" we flip each page to "pending" before enqueueing
+      // (avoids overwriting a worker-set status), which also consumes the
+      // "failure" filter as we advance.
+      await forEachIdPage(
+        (afterId, limit) =>
+          ctx.db
+            .select({ id: bookmarks.id })
+            .from(bookmarks)
+            .where(
+              and(
+                status === "all"
+                  ? undefined
+                  : eq(bookmarks.embeddingStatus, status),
+                modifiedAtFilter,
+                afterId ? gt(bookmarks.id, afterId) : undefined,
+              ),
+            )
+            .orderBy(asc(bookmarks.id))
+            .limit(limit),
+        async (ids) => {
+          if (status !== "pending") {
+            await ctx.db
+              .update(bookmarks)
+              .set({ embeddingStatus: "pending" })
+              .where(inArray(bookmarks.id, ids));
+          }
 
-        const ids = page.map((b) => b.id);
-        if (status !== "pending") {
-          await ctx.db
-            .update(bookmarks)
-            .set({ embeddingStatus: "pending" })
-            .where(inArray(bookmarks.id, ids));
-        }
-
-        await Promise.all(
-          ids.map((id) =>
+          await runInChunks(ids, (id) =>
             EmbeddingsQueue.enqueue(
               {
                 bookmarkId: id,
@@ -390,14 +425,9 @@ export const adminAppRouter = router({
                 groupId: "admin",
               },
             ),
-          ),
-        );
-
-        cursor = ids[ids.length - 1];
-        if (page.length < PAGE_SIZE) {
-          break;
-        }
-      }
+          );
+        },
+      );
     }),
   reprocessAssetsFixMode: adminBookmarksProcedure
     .input(
@@ -409,24 +439,32 @@ export const adminAppRouter = router({
         .optional(),
     )
     .mutation(async ({ ctx, input }) => {
-      const bookmarkIds = await ctx.db
-        .select({ id: bookmarkAssets.id })
-        .from(bookmarkAssets)
-        .innerJoin(bookmarks, eq(bookmarkAssets.id, bookmarks.id))
-        .where(modifiedWithin(input?.modifiedWithinSeconds));
-
-      await Promise.all(
-        bookmarkIds.map((b) =>
-          AssetPreprocessingQueue.enqueue(
-            {
-              bookmarkId: b.id,
-              fixMode: true,
-            },
-            {
-              priority: QueuePriority.Low,
-            },
+      await forEachIdPage(
+        (afterId, limit) =>
+          ctx.db
+            .select({ id: bookmarkAssets.id })
+            .from(bookmarkAssets)
+            .innerJoin(bookmarks, eq(bookmarkAssets.id, bookmarks.id))
+            .where(
+              and(
+                modifiedWithin(input?.modifiedWithinSeconds),
+                afterId ? gt(bookmarkAssets.id, afterId) : undefined,
+              ),
+            )
+            .orderBy(asc(bookmarkAssets.id))
+            .limit(limit),
+        (ids) =>
+          runInChunks(ids, (id) =>
+            AssetPreprocessingQueue.enqueue(
+              {
+                bookmarkId: id,
+                fixMode: true,
+              },
+              {
+                priority: QueuePriority.Low,
+              },
+            ),
           ),
-        ),
       );
     }),
   reRunInferenceOnAllBookmarks: adminBookmarksProcedure
@@ -447,20 +485,29 @@ export const adminAppRouter = router({
                 : bookmarks.summarizationStatus,
               input.status,
             );
-      const bookmarkIds = await ctx.db
-        .select({ id: bookmarks.id })
-        .from(bookmarks)
-        .where(and(statusFilter, modifiedWithin(input.modifiedWithinSeconds)));
-
-      await Promise.all(
-        bookmarkIds.map((b) =>
-          OpenAIQueue.enqueue(
-            { bookmarkId: b.id, type: input.type },
-            {
-              priority: QueuePriority.Low,
-            },
+      await forEachIdPage(
+        (afterId, limit) =>
+          ctx.db
+            .select({ id: bookmarks.id })
+            .from(bookmarks)
+            .where(
+              and(
+                statusFilter,
+                modifiedWithin(input.modifiedWithinSeconds),
+                afterId ? gt(bookmarks.id, afterId) : undefined,
+              ),
+            )
+            .orderBy(asc(bookmarks.id))
+            .limit(limit),
+        (ids) =>
+          runInChunks(ids, (id) =>
+            OpenAIQueue.enqueue(
+              { bookmarkId: id, type: input.type },
+              {
+                priority: QueuePriority.Low,
+              },
+            ),
           ),
-        ),
       );
     }),
   runAdminMaintenanceTask: adminJobsProcedure

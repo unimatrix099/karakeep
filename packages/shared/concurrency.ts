@@ -54,3 +54,28 @@ export function limitConcurrency<T>(
   }
   return results;
 }
+
+/**
+ * Runs `fn` over `items` in sequential chunks of `chunkSize` (items inside a
+ * chunk run concurrently), sleeping `pauseMs` between chunks.
+ *
+ * Used for bulk SQLite writes (e.g. enqueueing thousands of jobs): better-sqlite3
+ * is synchronous, so an unbroken burst of writes starves other processes that
+ * wait on the same database lock until their busy timeout expires. The pause
+ * leaves the lock free long enough for them to get in.
+ */
+export async function runInChunks<T>(
+  items: readonly T[],
+  fn: (item: T) => Promise<unknown>,
+  {
+    chunkSize = 50,
+    pauseMs = 25,
+  }: { chunkSize?: number; pauseMs?: number } = {},
+): Promise<void> {
+  for (let i = 0; i < items.length; i += chunkSize) {
+    if (i > 0 && pauseMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, pauseMs));
+    }
+    await Promise.all(items.slice(i, i + chunkSize).map(fn));
+  }
+}

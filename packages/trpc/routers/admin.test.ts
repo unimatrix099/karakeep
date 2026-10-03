@@ -371,6 +371,48 @@ describe("Admin Routes", () => {
           .sort(),
       ).toEqual([firstBookmark.id, secondBookmark.id].sort());
     });
+
+    test<CustomTestContext>("pages through more bookmarks than fit in one page", async ({
+      db,
+    }) => {
+      // Enqueues are chunked with real setTimeout pauses in between.
+      vi.useRealTimers();
+      const adminApi = await getAdminApi(db);
+      const [owner] = await db
+        .insert(users)
+        .values({ name: "Owner", email: "paging-owner@test.com" })
+        .returning();
+      const inserted = await db
+        .insert(bookmarks)
+        .values(
+          Array.from({ length: 1001 }, (_, i) => ({
+            userId: owner.id,
+            type: BookmarkTypes.TEXT,
+            title: `bookmark ${i}`,
+            embeddingStatus: "failure" as const,
+          })),
+        )
+        .returning({ id: bookmarks.id });
+      const allIds = inserted.map((b) => b.id).sort();
+      testQueueMocks.triggerSearchReindex.mockClear();
+      testQueueMocks.embeddingsEnqueue.mockClear();
+
+      await adminApi.reindexAllBookmarks();
+      // "failure" is consumed as each page is flipped to "pending", which must
+      // not make the keyset cursor skip or repeat any bookmark.
+      await adminApi.regenerateAllBookmarkEmbeddings({ status: "failure" });
+
+      expect(
+        testQueueMocks.triggerSearchReindex.mock.calls
+          .map(([bookmarkId]) => bookmarkId)
+          .sort(),
+      ).toEqual(allIds);
+      expect(
+        testQueueMocks.embeddingsEnqueue.mock.calls
+          .map(([payload]) => payload.bookmarkId)
+          .sort(),
+      ).toEqual(allIds);
+    }, 30_000);
   });
 
   test<CustomTestContext>("admin API key uses granular admin scopes", async ({

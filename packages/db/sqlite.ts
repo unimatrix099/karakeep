@@ -3,21 +3,24 @@ import Database from "better-sqlite3";
 interface OpenSqliteOptions {
   readOnly: boolean;
   walMode: boolean;
+  busyTimeoutMs?: number;
 }
 
 export function openSqliteDatabase(
   filename: string,
   options: OpenSqliteOptions,
 ) {
-  const sqlite = new Database(
-    filename,
-    options.readOnly
-      ? {
-          readonly: true,
-          fileMustExist: true,
-        }
-      : undefined,
-  );
+  const sqlite = new Database(filename, {
+    ...(options.readOnly ? { readonly: true, fileMustExist: true } : {}),
+    // How long a statement waits for a lock held by another connection before
+    // failing with SQLITE_BUSY. better-sqlite3 waits synchronously, blocking
+    // the event loop, so keep this modest.
+    // Omit the key when unset: better-sqlite3 rejects `timeout: undefined`
+    // instead of falling back to its 5s default.
+    ...(options.busyTimeoutMs !== undefined
+      ? { timeout: options.busyTimeoutMs }
+      : {}),
+  });
 
   if (!options.readOnly) {
     if (options.walMode) {
