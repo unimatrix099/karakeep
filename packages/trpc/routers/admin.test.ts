@@ -387,7 +387,7 @@ describe("Admin Routes", () => {
         .values(
           Array.from({ length: 1001 }, (_, i) => ({
             userId: owner.id,
-            type: BookmarkTypes.TEXT,
+            type: BookmarkTypes.TEXT as const,
             title: `bookmark ${i}`,
             embeddingStatus: "failure" as const,
           })),
