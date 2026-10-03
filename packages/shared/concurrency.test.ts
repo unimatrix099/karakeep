@@ -1,8 +1,8 @@
 // semaphore.test.ts
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AsyncSemaphore, limitConcurrency } from "./concurrency";
+import { AsyncSemaphore, limitConcurrency, runInChunks } from "./concurrency";
 
 describe("AsyncSemaphore", () => {
   it("should acquire a permit if available", async () => {
@@ -166,5 +166,85 @@ describe("limitConcurrency", () => {
     expect(
       resolveResults[3].status === "fulfilled" && resolveResults[3].value,
     ).toBe(4);
+  });
+});
+
+describe("runInChunks", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("processes every item once, in chunk order", async () => {
+    const seen: number[] = [];
+    await runInChunks(
+      [1, 2, 3, 4, 5],
+      async (n) => {
+        seen.push(n);
+      },
+      { chunkSize: 2, pauseMs: 0 },
+    );
+    expect(seen).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("never runs more than chunkSize items at once", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    await runInChunks(
+      Array.from({ length: 10 }, (_, i) => i),
+      async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight--;
+      },
+      { chunkSize: 3, pauseMs: 0 },
+    );
+    expect(maxInFlight).toBe(3);
+  });
+
+  it("pauses between chunks but not before the first or after the last", async () => {
+    vi.useFakeTimers();
+    const started: number[] = [];
+    const done = runInChunks(
+      [1, 2, 3],
+      async (n) => {
+        started.push(n);
+      },
+      { chunkSize: 1, pauseMs: 100 },
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(started).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started).toEqual([1, 2]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(started).toEqual([1, 2, 3]);
+    await done;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops at the first failing chunk", async () => {
+    const seen: number[] = [];
+    await expect(
+      runInChunks(
+        [1, 2, 3, 4],
+        async (n) => {
+          seen.push(n);
+          if (n === 2) throw new Error("boom");
+        },
+        { chunkSize: 2, pauseMs: 0 },
+      ),
+    ).rejects.toThrow("boom");
+    expect(seen).toEqual([1, 2]);
+  });
+
+  it("does nothing for an empty list", async () => {
+    let calls = 0;
+    await runInChunks([], async () => {
+      calls++;
+    });
+    expect(calls).toBe(0);
   });
 });

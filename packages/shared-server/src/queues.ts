@@ -7,6 +7,7 @@ import {
   QueueClient,
   QueueOptions,
 } from "@karakeep/shared/queueing";
+import { retryOnSqliteBusy } from "@karakeep/shared/sqliteBusy";
 import { zRuleEngineEventSchema } from "@karakeep/shared/types/rules";
 
 import { loadAllPlugins } from "./plugins";
@@ -17,15 +18,22 @@ export enum QueuePriority {
 }
 
 // Lazy client initialization - plugins are loaded on first access
-// We cache the promise to ensure only one initialization happens even with concurrent calls
+// We cache the promise to ensure only one initialization happens even with concurrent calls.
+// A failed initialization is not cached, so callers can retry it.
 let clientPromise: Promise<QueueClient> | null = null;
 
 function getClient(): Promise<QueueClient> {
   if (!clientPromise) {
-    clientPromise = (async () => {
+    const promise = (async () => {
       await loadAllPlugins();
       return await getQueueClient();
     })();
+    clientPromise = promise;
+    promise.catch(() => {
+      if (clientPromise === promise) {
+        clientPromise = null;
+      }
+    });
   }
   return clientPromise;
 }
@@ -68,8 +76,13 @@ function createDeferredQueue<T>(name: string, options: QueueOptions): Queue<T> {
 }
 
 export async function prepareQueue() {
-  const client = await getClient();
-  await client.prepare();
+  // Opening and migrating the queue database needs its lock. If another
+  // process (e.g. the web server during a bulk admin job) is writing heavily,
+  // wait it out instead of crashing on startup.
+  await retryOnSqliteBusy("queue", async () => {
+    const client = await getClient();
+    await client.prepare();
+  });
 }
 
 export async function startQueue() {
